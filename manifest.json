@@ -1,0 +1,14 @@
+{
+  "domain": "ha_unifi_site_manager",
+  "name": "UniFi Site Manager",
+  "config_flow": true,
+  "documentation": "https://github.com/tfam/ha_unifi_site_manager",
+  "requirements": [],
+  "ssdp": [],
+  "zeroconf": [],
+  "homekit": {},
+  "dependencies": [],
+  "codeowners": ["@tfam"],
+  "iot_class": "cloud_polling",
+  "version": "0.1.0"
+}

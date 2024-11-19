@@ -2,7 +2,7 @@
   "domain": "ha_unifi_site_manager",
   "name": "UniFi Site Manager",
   "config_flow": true,
-  "documentation": "https://github.com/tfam/ha_unifi_site_manager",
+  "documentation": "https://github.com/biofects/ha_unifi_site_manager",
   "requirements": [],
   "ssdp": [],
   "zeroconf": [],

@@ -1,0 +1,28 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "UniFi Site Manager",
+                "description": "Set up UniFi Site Manager integration. You will need your UI.com API key.",
+                "data": {
+                    "api_key": "API Key"
+                }
+            }
+        },
+        "error": {
+            "cannot_connect": "Failed to connect to UI.com API",
+            "invalid_auth": "Invalid API key",
+            "unknown": "Unexpected error occurred"
+        },
+        "abort": {
+            "already_configured": "UniFi Site Manager is already configured"
+        }
+    },
+    "entity": {
+        "sensor": {
+            "status": {
+                "name": "Status"
+            }
+        }
+    }
+}

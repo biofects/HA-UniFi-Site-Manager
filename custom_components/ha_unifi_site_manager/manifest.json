@@ -1,0 +1,14 @@
+{
+  "domain": "ha_unifi_site_manager",
+  "name": "HA UniFi Site Manager",
+  "config_flow": true,
+  "documentation": "https://github.com/biofects/HA-UniFi-Site-Manager",
+  "requirements": [],
+  "ssdp": [],
+  "zeroconf": [],
+  "homekit": {},
+  "dependencies": [],
+  "codeowners": ["@biofects"],
+  "iot_class": "cloud_polling",
+  "version": "0.1.0"
+}

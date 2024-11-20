@@ -1,5 +1,5 @@
 {
-  "domain": "ha_unifi_site_manager",
+  "domain": "HA-UniFi-Site-Manager",
   "name": "UniFi Site Manager",
   "config_flow": true,
   "documentation": "https://github.com/biofects/HA-UniFi-Site-Manager",

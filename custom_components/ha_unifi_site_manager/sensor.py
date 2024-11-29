@@ -64,8 +64,9 @@ async def async_setup_entry(
     for site in coordinator.data.get("sites", []):  # Changed from "data" to "sites"
         site_id = site.get("siteId")
         host_id = site.get("hostId")
+        is_owner = site.get("isOwner", False)
         
-        _LOGGER.debug("Processing site: %s, host_id: %s", site_id, host_id)
+        _LOGGER.debug("Processing site: %s, host_id: %s, is_owner: %s", site_id, host_id, is_owner)
         
         # Only process selected sites
         if site_id not in selected_sites:
@@ -76,6 +77,7 @@ async def async_setup_entry(
             # Get the hostname for this site
             hostname = site_host_map[host_id]["hostname"]
             site_name = f"{hostname}-site"
+            site_prefix = hostname  # Use hostname as prefix for device names
             
             _LOGGER.debug("Adding site sensor for %s with name %s", site_id, site_name)
             
@@ -106,8 +108,8 @@ async def async_setup_entry(
                 _LOGGER.debug("Processing device: id=%s, name=%s, mac=%s", device_id, device_name, device_mac)
                 
                 if device_id and device_mac and device_name:
-                    # Create device name with hostname prefix
-                    full_device_name = f"{hostname}-{device_name}"
+                    # Create device name with site prefix
+                    full_device_name = f"{site_prefix}-{device_name}"
                     
                     _LOGGER.debug("Adding device sensor: %s", full_device_name)
                     
@@ -231,80 +233,91 @@ class UniFiDeviceSensor(CoordinatorEntity, SensorEntity):
     ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator)
-
         self._site_id = site_id
         self._site_name = site_name
         self._device_id = device_id
         self._device_name = device_name
         self._device_mac = device_mac
-
-        # Set unique ID
         self._attr_unique_id = f"{site_id}_{device_mac}"
-        
-        # Set name
-        self._attr_name = f"{site_name} - {device_name}"
-        
-        # Set device info
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, self._device_mac)},
+        self._attr_name = device_name
+        self._attr_has_entity_name = True
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device info."""
+        device = self._get_device()
+        if not device:
+            return None
+
+        # Get device model and manufacturer info
+        model = device.get("model", "Unknown Model")
+        shortname = device.get("shortname", model)
+        product_line = device.get("productLine", "network").title()
+
+        return DeviceInfo(
+            identifiers={(DOMAIN, f"{self._site_id}_{self._device_mac}")},
             name=self._device_name,
-            manufacturer="Ubiquiti",
-            model=self._get_device_model(),
-            sw_version=self._get_device_version(),
-            via_device=(DOMAIN, f"site_{site_id}"),  # Link to site device
+            manufacturer=MANUFACTURER,
+            model=model,
+            sw_version=device.get("version"),
+            suggested_area=product_line,
+            via_device=(DOMAIN, f"{self._site_id}"),  # Link to site as parent device
         )
 
     @property
     def native_value(self) -> str:
         """Return the state of the sensor."""
-        device = self._get_device_data()
-        if device:
-            return STATE_ONLINE if device.get("state", {}).get("up", False) else STATE_OFFLINE
-        return STATE_OFFLINE
+        device = self._get_device()
+        if not device:
+            return STATE_OFFLINE
+        return STATE_ONLINE if device.get("status") == "online" else STATE_OFFLINE
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return the state attributes."""
-        device = self._get_device_data()
+        device = self._get_device()
         if not device:
             return {}
 
-        return {
-            "site_id": self._site_id,
+        attrs = {
+            "id": self._device_id,
+            "mac": self._device_mac,
+            "model": device.get("model", "Unknown"),
+            "type": device.get("shortname", "Unknown"),
+            "product_line": device.get("productLine", "network").title(),
+            "ip": device.get("ip", "Unknown"),
+            "firmware_version": device.get("version", "Unknown"),
+            "status": device.get("status", "Unknown"),
             "site_name": self._site_name,
-            "device_id": self._device_id,
-            "mac_address": self._device_mac,
-            "model": self._get_device_model(),
-            "version": self._get_device_version(),
-            "ip_address": device.get("config", {}).get("mgmt", {}).get("ip"),
-            "last_seen": device.get("state", {}).get("lastSeen"),
-            "uptime": device.get("state", {}).get("uptime"),
+            "site_id": self._site_id,
+            "last_seen": device.get("lastSeen", None),
+            "adoption_time": device.get("adoptionTime", None),
+            "is_managed": device.get("isManaged", False),
+            "firmware_status": device.get("firmwareStatus", "Unknown"),
         }
 
-    def _get_device_data(self) -> dict[str, Any] | None:
-        """Get the current device data."""
+        # Add connection info
+        if device.get("status") == "online":
+            attrs["uptime"] = device.get("uptime", 0)
+            attrs["last_seen"] = device.get("lastSeen", None)
+
+        return attrs
+
+    def _get_device(self) -> dict:
+        """Get the device data from coordinator."""
         if not self.coordinator.data:
             return None
 
-        # Find the device in the coordinator data
-        for device in self.coordinator.data.get("devices", []):
-            if device.get("mac") == self._device_mac:
-                return device
+        # Look through all devices in all hosts
+        for host_data in self.coordinator.data.get("devices", []):
+            if "devices" in host_data:
+                for device in host_data["devices"]:
+                    if (
+                        device.get("mac") == self._device_mac 
+                        or device.get("id") == self._device_id
+                    ):
+                        return device
         return None
-
-    def _get_device_model(self) -> str:
-        """Get the device model."""
-        device = self._get_device_data()
-        if device:
-            return device.get("model", "Unknown Model")
-        return "Unknown Model"
-
-    def _get_device_version(self) -> str:
-        """Get the device firmware version."""
-        device = self._get_device_data()
-        if device:
-            return device.get("version", "Unknown Version")
-        return "Unknown Version"
 
 class UniFiISPMetricsDevice(CoordinatorEntity, SensorEntity):
     """Representation of a UniFi ISP Metrics device."""

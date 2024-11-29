@@ -3,6 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 import zoneinfo
 from typing import Any, cast
+import logging
+
+_LOGGER = logging.getLogger(__name__)
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -19,7 +22,7 @@ from homeassistant.helpers.update_coordinator import (
 )
 from homeassistant.util import dt
 
-from .const import DOMAIN, MANUFACTURER, STATE_ONLINE, STATE_OFFLINE
+from .const import DOMAIN, MANUFACTURER, STATE_ONLINE, STATE_OFFLINE, CONF_SITES
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -33,34 +36,48 @@ async def async_setup_entry(
     entities = []
     site_host_map = {}
     
+    _LOGGER.debug("Building host map from data: %s", coordinator.data)
+    
     # First, build a mapping of host IDs to hostnames
-    for host in coordinator.data.get("data", []):
+    for host in coordinator.data.get("data", []):  # This is hosts data
         host_id = host.get("id")
-        hostname = host.get("reportedState", {}).get("hostname", "")
-        location = host.get("reportedState", {}).get("location", {}).get("text", "")
-        if hostname and host_id:
+        hostname = host.get("reportedState", {}).get("hostname", "").lower()
+        hardware = host.get("reportedState", {}).get("hardware", {})
+        shortname = hardware.get("shortname", "").lower()
+        
+        # Use hostname if available, otherwise use shortname
+        device_name = hostname if hostname else shortname
+        
+        if host_id and device_name:
             site_host_map[host_id] = {
-                "hostname": hostname,
-                "location": location.split(",")[0] if location else ""
+                "hostname": device_name,
+                "hardware": hardware
             }
     
-    for site in coordinator.data.get("data", []):
+    _LOGGER.debug("Site host map: %s", site_host_map)
+    
+    # Get the selected sites from config entry
+    selected_sites = entry.data.get(CONF_SITES, {})
+    _LOGGER.debug("Selected sites from config: %s", selected_sites)
+    
+    # Process sites from sites data
+    for site in coordinator.data.get("sites", []):  # Changed from "data" to "sites"
         site_id = site.get("siteId")
         host_id = site.get("hostId")
         
-        if site_id and host_id:
-            # Get site name from meta, default to 'default' if not available
-            site_raw_name = site.get("meta", {}).get("name", "default").lower()
+        _LOGGER.debug("Processing site: %s, host_id: %s", site_id, host_id)
+        
+        # Only process selected sites
+        if site_id not in selected_sites:
+            _LOGGER.debug("Skipping non-selected site: %s", site_id)
+            continue
             
-            # Map 'default' to appropriate name based on permissions
-            if site_raw_name == "default":
-                # Check if this is the owned/admin site
-                is_admin = site.get("permission") == "admin"
-                site_name = "tfam-home" if is_admin else "default"
-            else:
-                site_name = site_raw_name
+        if site_id and host_id and host_id in site_host_map:
+            # Get the hostname for this site
+            hostname = site_host_map[host_id]["hostname"]
+            site_name = f"{hostname}-site"
             
-            site_name = f"{site_name}-site"
+            _LOGGER.debug("Adding site sensor for %s with name %s", site_id, site_name)
             
             # Add site sensor
             entities.append(
@@ -72,31 +89,41 @@ async def async_setup_entry(
                 )
             )
             
-            # Create device sensors for this site
-            site_devices = [
-                device for device in coordinator.data.get("devices", [])
-                if device.get("hostId") == host_id
-            ]
+            # Get devices for this host from devices data
+            host_devices = []
+            for host_data in coordinator.data.get("devices", []):
+                if host_data.get("hostId") == host_id and "devices" in host_data:
+                    host_devices.extend(host_data.get("devices", []))
+            
+            _LOGGER.debug("Found devices for site %s: %s", site_id, host_devices)
             
             # Add device sensors for this site
-            for device in site_devices:
+            for device in host_devices:
                 device_id = device.get("id")
-                device_name = device.get("name", "Unknown Device")
+                device_name = device.get("name", "").lower()
                 device_mac = device.get("mac")
                 
-                if device_id and device_mac:
+                _LOGGER.debug("Processing device: id=%s, name=%s, mac=%s", device_id, device_name, device_mac)
+                
+                if device_id and device_mac and device_name:
+                    # Create device name with hostname prefix
+                    full_device_name = f"{hostname}-{device_name}"
+                    
+                    _LOGGER.debug("Adding device sensor: %s", full_device_name)
+                    
                     entities.append(
                         UniFiDeviceSensor(
                             coordinator,
                             site_id,
                             site_name,
                             device_id,
-                            device_name,
+                            full_device_name,
                             device_mac,
                         )
                     )
 
             # Add ISP metrics sensor for this site
+            _LOGGER.debug("Adding ISP metrics sensor for site %s", site_id)
             entities.append(
                 UniFiISPMetricsDevice(
                     coordinator,
@@ -105,7 +132,8 @@ async def async_setup_entry(
                     host_id,
                 )
             )
-
+    
+    _LOGGER.debug("Total entities created: %s", len(entities))
     async_add_entities(entities)
 
 class UniFiSiteSensor(CoordinatorEntity, SensorEntity):
@@ -184,7 +212,7 @@ class UniFiSiteSensor(CoordinatorEntity, SensorEntity):
             return None
 
         # Find the site in the coordinator data
-        for site in self.coordinator.data.get("data", []):
+        for site in self.coordinator.data.get("sites", []):  # Changed from "data" to "sites"
             if site.get("siteId") == self._site_id:
                 return site
         return None

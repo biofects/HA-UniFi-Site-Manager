@@ -3,19 +3,38 @@
         "step": {
             "user": {
                 "title": "Connect to UniFi Site Manager",
-                "description": "Please enter your UniFi Site Manager API key. You can get this from https://account.ui.com/api-keys",
+                "description": "Enter your UniFi Site Manager API key",
                 "data": {
                     "api_key": "API Key"
+                }
+            },
+            "sites": {
+                "title": "Select Sites",
+                "description": "Choose which UniFi sites you want to monitor",
+                "data": {
+                    "sites": "Sites"
                 }
             }
         },
         "error": {
-            "cannot_connect": "Failed to connect to UniFi Site Manager API. Please check your API key.",
+            "cannot_connect": "Failed to connect",
             "invalid_auth": "Invalid API key",
-            "unknown": "Unexpected error occurred"
+            "unknown": "Unexpected error"
         },
         "abort": {
-            "already_configured": "UniFi Site Manager is already configured"
+            "already_configured": "UniFi Site Manager is already configured",
+            "no_sites": "No sites found"
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "Update Site Selection",
+                "description": "Choose which UniFi sites you want to monitor",
+                "data": {
+                    "sites": "Sites"
+                }
+            }
         }
     }
 }

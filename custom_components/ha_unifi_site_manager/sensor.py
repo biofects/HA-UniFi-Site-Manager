@@ -322,6 +322,10 @@ class UniFiDeviceSensor(CoordinatorEntity, SensorEntity):
 class UniFiISPMetricsDevice(CoordinatorEntity, SensorEntity):
     """Representation of a UniFi ISP Metrics device."""
 
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_state_class = None  # Remove state class entirely
+    _attr_native_unit_of_measurement = None
+
     def __init__(
         self,
         coordinator: DataUpdateCoordinator,
@@ -336,7 +340,6 @@ class UniFiISPMetricsDevice(CoordinatorEntity, SensorEntity):
         self._attr_name = f"{site_name} ISP Metrics"
         self._attr_unique_id = f"{site_id}_isp_metrics"
         self._attr_device_class = SensorDeviceClass.TIMESTAMP
-        self._attr_state_class = SensorStateClass.MEASUREMENT
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -356,53 +359,81 @@ class UniFiISPMetricsDevice(CoordinatorEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return the state attributes."""
-        site_metrics = self.coordinator.data.get("isp_metrics", {}).get(self._site_id, {})
+        # Log the entire coordinator data for debugging
+        _LOGGER.debug("Full coordinator data: %s", self.coordinator.data)
+
+        # Get ISP metrics for this specific site
+        site_metrics = self.coordinator.data.get("isp_metrics", {}) if self.coordinator.data else {}
+        site_specific_metrics = site_metrics.get(self._site_id, {})
+        
+        # Log the site-specific metrics
+        _LOGGER.debug("Site-specific ISP metrics for %s: %s", self._site_id, site_specific_metrics)
+
         metrics = {}
         
-        if site_metrics:
-            # Process latency data
-            latency = site_metrics.get("latency", {})
-            if latency:
-                metrics.update({
-                    "latency_avg": latency.get("latencyAvg"),
-                    "latency_min": latency.get("latencyMin"),
-                    "latency_max": latency.get("latencyMax"),
-                })
+        # Function to get the most recent timestamp's metrics
+        def get_latest_metrics(metric_type):
+            type_metrics = site_specific_metrics.get(metric_type, {})
+            if not type_metrics:
+                return {}
             
-            # Process packet loss data
-            packet_loss = site_metrics.get("packet_loss", {})
-            if packet_loss:
-                metrics.update({
-                    "packet_loss_percentage": packet_loss.get("packetLossPercentage"),
-                    "packet_loss_count": packet_loss.get("packetLossCount"),
-                })
-            
-            # Process bandwidth data
-            bandwidth = site_metrics.get("bandwidth", {})
-            if bandwidth:
-                metrics.update({
-                    "download_mbps": bandwidth.get("downloadMbps"),
-                    "upload_mbps": bandwidth.get("uploadMbps"),
-                })
+            # Get the most recent timestamp
+            try:
+                latest_timestamp = max(type_metrics.keys()) if type_metrics else None
+                return type_metrics.get(latest_timestamp, {}) if latest_timestamp else {}
+            except Exception as e:
+                _LOGGER.debug(f"Error getting latest metrics for {metric_type}: {e}")
+                return {}
 
-            # Process WAN data
-            wan = site_metrics.get("wan", {})
-            if wan:
-                metrics.update({
-                    "wan_latency_avg": wan.get("avgLatency"),
-                    "wan_latency_max": wan.get("maxLatency"),
-                    "wan_download_kbps": wan.get("download_kbps"),
-                    "wan_upload_kbps": wan.get("upload_kbps"),
-                    "wan_packet_loss": wan.get("packetLoss"),
-                    "wan_uptime": wan.get("uptime"),
-                    "wan_downtime": wan.get("downtime"),
-                    "isp_name": wan.get("ispName"),
-                    "isp_asn": wan.get("ispAsn"),
-                })
+        # Process latency metrics
+        latency_metrics = get_latest_metrics('latency')
+        metrics.update({
+            "latency_avg": latency_metrics.get('avg_latency'),
+            "latency_min": latency_metrics.get('min_latency', latency_metrics.get('avg_latency')),
+            "latency_max": latency_metrics.get('max_latency'),
+        })
+        
+        # Process packet loss metrics
+        packet_loss_metrics = get_latest_metrics('packet-loss')
+        packet_loss_value = packet_loss_metrics.get('packet_loss')
 
+        # Ensure packet_loss_value is a number, default to 0 if not
+        try:
+            packet_loss_percentage = float(packet_loss_value) if packet_loss_value is not None else 0
+        except (TypeError, ValueError):
+            packet_loss_percentage = 0
+
+        metrics.update({
+            "packet_loss_percentage": packet_loss_percentage,
+        })
+        
+        # Process bandwidth metrics
+        bandwidth_metrics = get_latest_metrics('bandwidth')
+        metrics.update({
+            "download_mbps": bandwidth_metrics.get('download_kbps', 0) / 1000,  # Convert kbps to Mbps
+            "upload_mbps": bandwidth_metrics.get('upload_kbps', 0) / 1000,  # Convert kbps to Mbps
+        })
+
+        # Process WAN metrics
+        wan_metrics = get_latest_metrics('wan')
+        metrics.update({
+            "wan_latency_avg": wan_metrics.get('avg_latency'),
+            "wan_latency_max": wan_metrics.get('max_latency'),
+            "wan_download_kbps": wan_metrics.get('download_kbps'),
+            "wan_upload_kbps": wan_metrics.get('upload_kbps'),
+            "wan_packet_loss": wan_metrics.get('packet_loss'),
+            "wan_uptime": wan_metrics.get('uptime'),
+            "wan_downtime": wan_metrics.get('downtime'),
+            "isp_name": wan_metrics.get('isp_name'),
+            "isp_asn": wan_metrics.get('isp_asn'),
+        })
+
+        # Log the final metrics
+        _LOGGER.debug("Final metrics for site %s: %s", self._site_id, metrics)
         return metrics
 
     @property
     def available(self) -> bool:
         """Return if entity is available."""
         return self.coordinator.last_update_success and bool(self.coordinator.data)
+

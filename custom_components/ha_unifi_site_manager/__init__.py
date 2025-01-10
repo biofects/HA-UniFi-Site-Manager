@@ -1,7 +1,8 @@
 """The UniFi Site Manager integration."""
 import logging
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta
+import zoneinfo
 import aiohttp
 from async_timeout import timeout as async_timeout
 
@@ -32,7 +33,7 @@ PLATFORMS = [Platform.SENSOR]
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up UniFi Site Manager from a config entry."""
     coordinator = UniFiSiteManagerDataUpdateCoordinator(
-        hass,
+        hass=hass,
         api_key=entry.data[CONF_API_KEY],
     )
 
@@ -121,19 +122,19 @@ class UniFiSiteManagerDataUpdateCoordinator(DataUpdateCoordinator):
 
     def __init__(self, hass: HomeAssistant, api_key: str) -> None:
         """Initialize the coordinator."""
+        self._api_key = api_key
+        self._session = async_get_clientsession(hass)
+        self.headers = {
+            "X-API-KEY": api_key,
+            "Accept": "application/json"
+        }
+
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
             update_interval=timedelta(seconds=UPDATE_INTERVAL),
         )
-
-        self._session = async_get_clientsession(hass)
-        self._api_key = api_key
-        self.headers = {
-            "X-API-KEY": api_key,
-            "Accept": "application/json"
-        }
 
     async def _async_update_data(self) -> dict:
         """Fetch data from UniFi Site Manager API."""
@@ -154,15 +155,28 @@ class UniFiSiteManagerDataUpdateCoordinator(DataUpdateCoordinator):
                 if not devices_response:
                     devices_response = {"data": []}
 
-                _LOGGER.debug("Sites response: %s", sites_response)
-                _LOGGER.debug("Hosts response: %s", hosts_response)
-                _LOGGER.debug("Devices response: %s", devices_response)
+                # Fetch ISP metrics for each site
+                isp_metrics = {}
+                for site in sites_response.get("data", []):
+                    site_id = site.get("siteId")
+                    if site_id:
+                        try:
+                            metrics = {
+                                "latency": await self._fetch_isp_metrics(session, "latency", site_id),
+                                "packet_loss": await self._fetch_isp_metrics(session, "packet-loss", site_id),
+                                "bandwidth": await self._fetch_isp_metrics(session, "bandwidth", site_id),
+                                "wan": await self._fetch_isp_metrics(session, "wan", site_id)
+                            }
+                            isp_metrics[site_id] = metrics
+                        except Exception as err:
+                            _LOGGER.debug("Error fetching ISP metrics for site %s: %s", site_id, err)
+                            isp_metrics[site_id] = {}
 
-                # Combine all data
                 return {
-                    "data": hosts_response.get("data", []),  # Use hosts as primary data
+                    "data": hosts_response.get("data", []),
                     "sites": sites_response.get("data", []),
-                    "devices": devices_response.get("data", [])
+                    "devices": devices_response.get("data", []),
+                    "isp_metrics": isp_metrics
                 }
 
         except Exception as err:
@@ -174,20 +188,20 @@ class UniFiSiteManagerDataUpdateCoordinator(DataUpdateCoordinator):
         try:
             url = f"{API_BASE_URL}{endpoint}"
             _LOGGER.debug("Fetching data from %s", url)
-            
+
             async with session.get(
                 url,
                 headers=self.headers,
             ) as resp:
                 if resp.status == 401:
-                    _LOGGER.error("Authentication failed for %s: Invalid API key", url)
+                    _LOGGER.debug("Authentication failed for %s: Invalid API key", url)
                     raise ConfigEntryAuthFailed("Invalid API key")
                 resp.raise_for_status()
                 data = await resp.json()
                 _LOGGER.debug("Response from %s: %s", url, data)
                 return data
         except aiohttp.ClientError as err:
-            _LOGGER.error("Error fetching data from %s: %s", endpoint, err)
+            _LOGGER.debug("Error fetching data from %s: %s", endpoint, err)
             raise UpdateFailed(f"Error fetching data from {endpoint}: {err}")
 
     async def _fetch_isp_metrics(
@@ -198,23 +212,104 @@ class UniFiSiteManagerDataUpdateCoordinator(DataUpdateCoordinator):
     ) -> dict:
         """Fetch ISP metrics data."""
         try:
+            # Calculate timestamps explicitly
+            end_time = datetime.now(tz=zoneinfo.ZoneInfo("UTC"))
+            begin_time = end_time - timedelta(hours=24)
+
             params = {
-                "duration": "24h",  # Get last 24 hours of 5-minute metrics
-                "siteId": site_id
+                "beginTimestamp": begin_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "endTimestamp": end_time.strftime("%Y-%m-%dT%H:%M:%SZ")
             }
-            
-            url = f"{API_BASE_URL}/ea/isp-metrics/{metric_type}"
+
+            url = f"{API_BASE_URL}/ea/isp-metrics/5m"  # Always fetch 5m metrics
+            _LOGGER.debug("Attempting ISP metrics fetch:")
+            _LOGGER.debug("URL: %s", url)
+            _LOGGER.debug("Metric Type: %s", metric_type)
+            _LOGGER.debug("Site ID: %s", site_id)
+
             async with session.get(
                 url,
                 params=params,
                 headers=self.headers,
-                ssl=False,
             ) as resp:
                 if resp.status == 200:
-                    return await resp.json()
-                _LOGGER.debug("ISP metrics response for %s: %s %s", metric_type, resp.status, await resp.text())
-                return {"data": {}}
-                
+                    try:
+                        data = await resp.json()
+                        
+                        # Prepare a dictionary to store metrics for this site
+                        site_metrics = {}
+
+                        # Process each entry in the data
+                        for entry in data.get('data', []):
+                            # Explicitly check if the entry is for the correct site
+                            if entry.get('siteId') == site_id:
+                                # Process each period
+                                for period in entry.get('periods', []):
+                                    metric_time = period.get('metricTime')
+                                    period_data = period.get('data', {})
+                                    
+                                    # Extract WAN metrics
+                                    wan_metrics = period_data.get('wan', {})
+                                    
+                                    # Create a metrics dictionary for this timestamp
+                                    timestamp_metrics = {
+                                        'metric_type': entry.get('metricType'),
+                                        'host_id': entry.get('hostId'),
+                                        'avg_latency': wan_metrics.get('avgLatency'),
+                                        'max_latency': wan_metrics.get('maxLatency'),
+                                        'download_kbps': wan_metrics.get('download_kbps'),
+                                        'upload_kbps': wan_metrics.get('upload_kbps'),
+                                        'packet_loss': wan_metrics.get('packetLoss'),
+                                        'isp_name': wan_metrics.get('ispName'),
+                                        'isp_asn': wan_metrics.get('ispAsn'),
+                                        'uptime': wan_metrics.get('uptime'),
+                                        'downtime': wan_metrics.get('downtime')
+                                    }
+                                    
+                                    # Store metrics by timestamp
+                                    if metric_time:
+                                        site_metrics[metric_time] = timestamp_metrics
+
+                        # If a specific metric type is requested, filter the results
+                        if metric_type != '5m':
+                            filtered_metrics = {}
+                            for timestamp, metrics in site_metrics.items():
+                                if metric_type == 'latency':
+                                    filtered_metrics[timestamp] = {
+                                        'avg_latency': metrics.get('avg_latency'),
+                                        'max_latency': metrics.get('max_latency')
+                                    }
+                                elif metric_type == 'packet-loss':
+                                    filtered_metrics[timestamp] = {
+                                        'packet_loss': metrics.get('packet_loss')
+                                    }
+                                elif metric_type == 'bandwidth':
+                                    filtered_metrics[timestamp] = {
+                                        'download_kbps': metrics.get('download_kbps'),
+                                        'upload_kbps': metrics.get('upload_kbps')
+                                    }
+                                elif metric_type == 'wan':
+                                    filtered_metrics[timestamp] = metrics
+                            
+                            site_metrics = filtered_metrics
+
+                        _LOGGER.debug("Processed ISP metrics for %s: %s", metric_type, site_metrics)
+                        return site_metrics
+
+                    except ValueError as json_err:
+                        _LOGGER.debug("Failed to parse JSON response for %s: %s", metric_type, json_err)
+                        return {}
+
+                # Log error if request was not successful
+                response_text = await resp.text()
+                _LOGGER.debug(
+                    "Failed to fetch ISP metrics: %s %s",
+                    resp.status,
+                    response_text
+                )
+                return {}
+
         except Exception as err:
-            _LOGGER.error("Error fetching ISP metrics: %s", err)
-            return {"data": {}}
+            _LOGGER.debug("Error fetching ISP metrics: %s", err)
+            return {}
+

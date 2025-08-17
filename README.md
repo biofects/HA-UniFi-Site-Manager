@@ -35,6 +35,13 @@ If you find this integration useful, please consider donating. Your support is g
   - WAN uptime percentage
   - ISP information
 
+## 📸 Screenshots
+
+| Example Dashboard | Devices View | Device Example |
+|------------------|--------------|----------------|
+| ![Example Dashboard](./screenshots/Example-Dashboard.png) | ![Devices View](./screenshots/HA-Unifi_Site-Manager-Devices.png) | ![Device Example](./screenshots/Device-example.png) |
+
+
 ## 🚀 Installation
 
 ### HACS Installation (Recommended)

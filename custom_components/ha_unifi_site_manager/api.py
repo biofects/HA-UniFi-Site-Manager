@@ -14,6 +14,9 @@ from .const import (
     API_HOSTS,
     API_HOST_BY_ID,
     API_ISP_METRICS,
+    API_SD_WAN_CONFIGS,
+    API_SD_WAN_CONFIG_BY_ID,
+    API_SD_WAN_CONFIG_STATUS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -29,6 +32,53 @@ class UniFiSiteManagerAPIError(Exception):
 
 
 class UniFiSiteManagerAPI:
+    async def list_sdwan_configs(self) -> List[Dict[str, Any]]:
+        """List all SD-WAN configs."""
+        _LOGGER.debug("Fetching SD-WAN configs")
+        try:
+            response = await self._make_request("GET", API_SD_WAN_CONFIGS)
+            configs = response.get("data", [])
+            _LOGGER.debug("Found %d SD-WAN configs", len(configs))
+            return configs
+        except UniFiSiteManagerAPIError as exc:
+            _LOGGER.error("Failed to fetch SD-WAN configs: %s", exc)
+            return []
+
+    async def get_sdwan_config_by_id(self, config_id: str) -> Optional[Dict[str, Any]]:
+        """Get SD-WAN config by ID."""
+        _LOGGER.debug("Fetching SD-WAN config %s", config_id)
+        try:
+            response = await self._make_request(
+                "GET",
+                API_SD_WAN_CONFIG_BY_ID.format(id=config_id),
+            )
+            config = response.get("data")
+            if config:
+                _LOGGER.debug("Found SD-WAN config %s", config_id)
+            else:
+                _LOGGER.warning("SD-WAN config %s not found", config_id)
+            return config
+        except UniFiSiteManagerAPIError as exc:
+            _LOGGER.error("Failed to fetch SD-WAN config %s: %s", config_id, exc)
+            return None
+
+    async def get_sdwan_config_status(self, config_id: str) -> Optional[Dict[str, Any]]:
+        """Get SD-WAN config status by ID."""
+        _LOGGER.debug("Fetching SD-WAN config status for %s", config_id)
+        try:
+            response = await self._make_request(
+                "GET",
+                API_SD_WAN_CONFIG_STATUS.format(id=config_id),
+            )
+            status = response.get("data")
+            if status:
+                _LOGGER.debug("Found SD-WAN config status for %s", config_id)
+            else:
+                _LOGGER.warning("SD-WAN config status for %s not found", config_id)
+            return status
+        except UniFiSiteManagerAPIError as exc:
+            _LOGGER.error("Failed to fetch SD-WAN config status for %s: %s", config_id, exc)
+            return None
     """UniFi Site Manager API client."""
 
     def __init__(self, api_key: str) -> None:

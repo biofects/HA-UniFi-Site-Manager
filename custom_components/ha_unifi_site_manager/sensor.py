@@ -35,108 +35,122 @@ async def async_setup_entry(
     # Add site sensors
     entities = []
     site_host_map = {}
-    
+
     _LOGGER.debug("Building host map from data: %s", coordinator.data)
-    
-    # First, build a mapping of host IDs to hostnames
-    for host in coordinator.data.get("data", []):  # This is hosts data
+
+    # Build host map (existing logic)
+    for host in coordinator.data.get("data", []):
         host_id = host.get("id")
         hostname = host.get("reportedState", {}).get("hostname", "").lower()
         hardware = host.get("reportedState", {}).get("hardware", {})
         shortname = hardware.get("shortname", "").lower()
-        
-        # Use hostname if available, otherwise use shortname
         device_name = hostname if hostname else shortname
-        
         if host_id and device_name:
             site_host_map[host_id] = {
                 "hostname": device_name,
                 "hardware": hardware
             }
-    
+
     _LOGGER.debug("Site host map: %s", site_host_map)
-    
+
     # Get the selected sites from config entry
     selected_sites = entry.data.get(CONF_SITES, {})
     _LOGGER.debug("Selected sites from config: %s", selected_sites)
-    
-    # Process sites from sites data
-    for site in coordinator.data.get("sites", []):  # Changed from "data" to "sites"
+
+    # Process sites from sites data (existing logic)
+    for site in coordinator.data.get("sites", []):
         site_id = site.get("siteId")
         host_id = site.get("hostId")
         is_owner = site.get("isOwner", False)
-        
         _LOGGER.debug("Processing site: %s, host_id: %s, is_owner: %s", site_id, host_id, is_owner)
-        
-        # Only process selected sites
         if site_id not in selected_sites:
             _LOGGER.debug("Skipping non-selected site: %s", site_id)
             continue
-            
         if site_id and host_id and host_id in site_host_map:
-            # Get the hostname for this site
             hostname = site_host_map[host_id]["hostname"]
             site_name = f"{hostname}-site"
-            site_prefix = hostname  # Use hostname as prefix for device names
-            
+            site_prefix = hostname
             _LOGGER.debug("Adding site sensor for %s with name %s", site_id, site_name)
-            
-            # Add site sensor
-            entities.append(
-                UniFiSiteSensor(
-                    coordinator,
-                    site_id,
-                    site_name,
-                    host_id,
-                )
-            )
-            
-            # Get devices for this host from devices data
+            entities.append(UniFiSiteSensor(coordinator, site_id, site_name, host_id))
             host_devices = []
             for host_data in coordinator.data.get("devices", []):
                 if host_data.get("hostId") == host_id and "devices" in host_data:
                     host_devices.extend(host_data.get("devices", []))
-            
             _LOGGER.debug("Found devices for site %s: %s", site_id, host_devices)
-            
-            # Add device sensors for this site
             for device in host_devices:
                 device_id = device.get("id")
                 device_name = device.get("name", "").lower()
                 device_mac = device.get("mac")
-                
                 _LOGGER.debug("Processing device: id=%s, name=%s, mac=%s", device_id, device_name, device_mac)
-                
                 if device_id and device_mac and device_name:
-                    # Create device name with site prefix
                     full_device_name = f"{site_prefix}-{device_name}"
-                    
                     _LOGGER.debug("Adding device sensor: %s", full_device_name)
-                    
-                    entities.append(
-                        UniFiDeviceSensor(
-                            coordinator,
-                            site_id,
-                            site_name,
-                            device_id,
-                            full_device_name,
-                            device_mac,
-                        )
-                    )
-
-            # Add ISP metrics sensor for this site
+                    entities.append(UniFiDeviceSensor(coordinator, site_id, site_name, device_id, full_device_name, device_mac))
             _LOGGER.debug("Adding ISP metrics sensor for site %s", site_id)
-            entities.append(
-                UniFiISPMetricsDevice(
-                    coordinator,
-                    site_id,
-                    site_name,
-                    host_id,
-                )
-            )
-    
+            entities.append(UniFiISPMetricsDevice(coordinator, site_id, site_name, host_id))
+
+
+    # Add SD-WAN config sensors only if configs exist
+    sdwan_configs = coordinator.data.get("sdwan_configs", [])
+    if sdwan_configs:
+        for config in sdwan_configs:
+            config_id = config.get("id")
+            config_name = config.get("name", f"SDWAN-{config_id}")
+            entities.append(UniFiSDWANConfigSensor(coordinator, config_id, config_name))
+    else:
+        _LOGGER.info("No SD-WAN configs found; no SD-WAN sensors will be created.")
+
     _LOGGER.debug("Total entities created: %s", len(entities))
     async_add_entities(entities)
+class UniFiSDWANConfigSensor(CoordinatorEntity, SensorEntity):
+    """Representation of a UniFi SD-WAN Config sensor."""
+
+    def __init__(self, coordinator: DataUpdateCoordinator, config_id: str, config_name: str) -> None:
+        super().__init__(coordinator)
+        self._config_id = config_id
+        self._attr_unique_id = f"sdwan_config_{config_id}"
+        self._attr_name = config_name
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, f"sdwan_config_{config_id}")},
+            name=config_name,
+            manufacturer=MANUFACTURER,
+            model="SD-WAN Config",
+        )
+
+    @property
+    def native_value(self) -> str:
+        """Return the state of the SD-WAN config sensor."""
+        config = self._get_config()
+        if config:
+            return config.get("status", "unknown")
+        return "unknown"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return extra attributes for the SD-WAN config sensor."""
+        config = self._get_config()
+        if not config:
+            return {}
+        attrs = {
+            "id": self._config_id,
+            "name": config.get("name"),
+            "description": config.get("description"),
+            "type": config.get("type"),
+            "created": config.get("created"),
+            "last_updated": config.get("lastUpdated"),
+            "status": config.get("status"),
+            "details": config.get("details"),
+        }
+        return attrs
+
+    def _get_config(self) -> dict[str, Any] | None:
+        """Get the SD-WAN config data from coordinator."""
+        if not self.coordinator.data:
+            return None
+        for config in self.coordinator.data.get("sdwan_configs", []):
+            if config.get("id") == self._config_id:
+                return config
+        return None
 
 class UniFiSiteSensor(CoordinatorEntity, SensorEntity):
     """Representation of a UniFi site sensor."""
@@ -348,7 +362,6 @@ class UniFiISPMetricsDevice(CoordinatorEntity, SensorEntity):
             identifiers={(DOMAIN, self._site_id)},
             manufacturer=MANUFACTURER,
             name=self._attr_name,
-            via_device=(DOMAIN, self._host_id),
         )
 
     @property

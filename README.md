@@ -8,12 +8,17 @@ A powerful Home Assistant integration that provides comprehensive monitoring and
 [![GitHub Release][releases-shield]][releases]
 ![Project Maintenance][maintenance-shield]
 
-## 💸 Donations Welcome!
+---
+## 💸 Donations Appreciated!
+If you find this plugin useful, please consider donating. Your support is greatly appreciated!
 
-If you find this integration useful, please consider donating. Your support is greatly appreciated!
+### Sponsor me on GitHub
+[![Sponsor Me](https://img.shields.io/badge/Sponsor%20Me-%F0%9F%92%AA-purple?style=for-the-badge)](https://github.com/sponsors/biofects?frequency=recurring&sponsor=biofects) 
+
+### or
+## Paypal
 
 [![paypal](https://www.paypalobjects.com/en_US/i/btn/btn_donateCC_LG.gif)](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=TWRQVYJWC77E6)
-
 ---
 
 ## ✨ Features
@@ -34,6 +39,11 @@ If you find this integration useful, please consider donating. Your support is g
   - Client statistics (WiFi, wired, guest)
   - WAN uptime percentage
   - ISP information
+- 🔄 **SD-WAN Configuration Monitoring**:
+  - Monitor SD-WAN configuration status
+  - View configuration details and settings
+  - Track configuration updates and changes
+  - Support for multiple SD-WAN configs per site
 
 ## 📸 Screenshots
 
@@ -105,6 +115,32 @@ If you find this integration useful, please consider donating. Your support is g
     - Packet loss
     - Uptime/downtime
     - ISP details (name, ASN)
+
+### SD-WAN Configuration Sensor
+- **State**: Configuration status (active, inactive, etc.)
+- **Attributes**:
+  - Configuration ID and name
+  - Description and type
+  - Creation and last updated timestamps
+  - Detailed configuration settings
+
+## 📈 Changelog
+
+### Version 0.2.0
+- ✨ **NEW**: Added SD-WAN configuration monitoring support
+- ✨ **NEW**: Support for List SD-WAN Configs endpoint
+- ✨ **NEW**: Support for Get SD-WAN Config by ID endpoint  
+- ✨ **NEW**: Support for Get SD-WAN Config Status endpoint
+- 🔧 **IMPROVED**: Enhanced error handling for missing SD-WAN configurations
+- 🔧 **FIXED**: Resolved device registry warnings for via_device references
+- 🔧 **OPTIMIZED**: Only creates SD-WAN sensors when configurations are available
+
+### Version 0.1.0
+- 🎉 Initial release
+- ✨ Multi-site support
+- ✨ ISP metrics monitoring
+- ✨ Device status tracking
+- ✨ Site statistics
 
 ## ⏱️ Update Interval
 

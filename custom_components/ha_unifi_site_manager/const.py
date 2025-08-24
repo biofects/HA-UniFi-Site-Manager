@@ -5,12 +5,15 @@ from typing import Final
 DOMAIN: Final = "ha_unifi_site_manager"
 MANUFACTURER: Final = "Ubiquiti Inc."
 
-# API Constants
 API_BASE_URL: Final = "https://api.ui.com"
 API_SITES_ENDPOINT: Final = "/ea/sites"
 API_DEVICES_ENDPOINT: Final = "/ea/devices"
 API_HOSTS_ENDPOINT: Final = "/ea/hosts"
 API_CLIENTS_ENDPOINT: Final = "/ea/clients"
+# SD-WAN Endpoints
+API_SD_WAN_CONFIGS: Final = "/ea/sd-wan-configs"
+API_SD_WAN_CONFIG_BY_ID: Final = "/ea/sd-wan-configs/{id}"
+API_SD_WAN_CONFIG_STATUS: Final = "/ea/sd-wan-configs/{id}/status"
 
 # Configuration
 CONF_API_KEY: Final = "api_key"

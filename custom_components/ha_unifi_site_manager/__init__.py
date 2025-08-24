@@ -155,6 +155,13 @@ class UniFiSiteManagerDataUpdateCoordinator(DataUpdateCoordinator):
                 if not devices_response:
                     devices_response = {"data": []}
 
+                # Fetch SD-WAN configs
+                sdwan_configs_response = await self._fetch_data(session, "/ea/sd-wan-configs")
+                if not sdwan_configs_response:
+                    sdwan_configs = []
+                else:
+                    sdwan_configs = sdwan_configs_response.get("data", [])
+
                 # Fetch ISP metrics for each site
                 isp_metrics = {}
                 for site in sites_response.get("data", []):
@@ -176,7 +183,8 @@ class UniFiSiteManagerDataUpdateCoordinator(DataUpdateCoordinator):
                     "data": hosts_response.get("data", []),
                     "sites": sites_response.get("data", []),
                     "devices": devices_response.get("data", []),
-                    "isp_metrics": isp_metrics
+                    "isp_metrics": isp_metrics,
+                    "sdwan_configs": sdwan_configs,
                 }
 
         except Exception as err:

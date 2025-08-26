@@ -89,19 +89,71 @@ async def async_setup_entry(
             _LOGGER.debug("Adding ISP metrics sensor for site %s", site_id)
             entities.append(UniFiISPMetricsDevice(coordinator, site_id, site_name, host_id))
 
-
-    # Add SD-WAN config sensors only if configs exist
-    sdwan_configs = coordinator.data.get("sdwan_configs", [])
+    # Enhanced SD-WAN debug logging
+    _LOGGER.debug("=== Starting SD-WAN Sensor Setup ===")
+    _LOGGER.debug("Full coordinator data keys: %s", list(coordinator.data.keys()) if coordinator.data else "No data")
+    
+    sdwan_configs = coordinator.data.get("sdwan_configs", []) if coordinator.data else []
+    sdwan_statuses = coordinator.data.get("sdwan_statuses", {}) if coordinator.data else {}
+    
+    _LOGGER.debug("SD-WAN configs in coordinator: %d configs", len(sdwan_configs))
+    _LOGGER.debug("SD-WAN statuses in coordinator: %d statuses", len(sdwan_statuses))
+    
     if sdwan_configs:
-        for config in sdwan_configs:
+        _LOGGER.info("Found %d SD-WAN configs, creating sensors", len(sdwan_configs))
+        for i, config in enumerate(sdwan_configs):
             config_id = config.get("id")
             config_name = config.get("name", f"SDWAN-{config_id}")
-            entities.append(UniFiSDWANConfigSensor(coordinator, config_id, config_name))
+            
+            _LOGGER.debug("Processing SD-WAN config %d: id=%s, name=%s", i, config_id, config_name)
+            _LOGGER.debug("Config data keys: %s", list(config.keys()))
+            
+            if config_id:
+                # Add main config sensor
+                _LOGGER.debug("Creating main SD-WAN config sensor for %s", config_name)
+                try:
+                    entities.append(UniFiSDWANConfigSensor(coordinator, config_id, config_name))
+                    _LOGGER.debug("Successfully created main config sensor for %s", config_name)
+                except Exception as err:
+                    _LOGGER.error("Failed to create main config sensor for %s: %s", config_name, err)
+                
+                # Add hub sensors
+                hubs = config.get("hubs", [])
+                _LOGGER.debug("Found %d hubs for config %s", len(hubs), config_name)
+                for j, hub in enumerate(hubs):
+                    hub_id = hub.get("id")
+                    hub_name = hub.get("name", f"Hub-{hub_id}")
+                    _LOGGER.debug("Creating hub sensor %d: id=%s, name=%s, siteId=%s", 
+                                j, hub_id, hub_name, hub.get("siteId"))
+                    try:
+                        entities.append(UniFiSDWANHubSensor(coordinator, config_id, hub, config_name))
+                        _LOGGER.debug("Successfully created hub sensor for %s", hub_name)
+                    except Exception as err:
+                        _LOGGER.error("Failed to create hub sensor for %s: %s", hub_name, err)
+                
+                # Add spoke sensors
+                spokes = config.get("spokes", [])
+                _LOGGER.debug("Found %d spokes for config %s", len(spokes), config_name)
+                for k, spoke in enumerate(spokes):
+                    spoke_id = spoke.get("id")
+                    spoke_name = spoke.get("name", f"Spoke-{spoke_id}")
+                    _LOGGER.debug("Creating spoke sensor %d: id=%s, name=%s, siteId=%s", 
+                                k, spoke_id, spoke_name, spoke.get("siteId"))
+                    try:
+                        entities.append(UniFiSDWANSpokeSensor(coordinator, config_id, spoke, config_name))
+                        _LOGGER.debug("Successfully created spoke sensor for %s", spoke_name)
+                    except Exception as err:
+                        _LOGGER.error("Failed to create spoke sensor for %s: %s", spoke_name, err)
+            else:
+                _LOGGER.warning("SD-WAN config %d has no ID, skipping", i)
     else:
-        _LOGGER.info("No SD-WAN configs found; no SD-WAN sensors will be created.")
+        _LOGGER.warning("No SD-WAN configs found in coordinator data")
+        _LOGGER.debug("Available coordinator data: %s", coordinator.data)
 
+    _LOGGER.debug("=== SD-WAN Sensor Setup Complete ===")
     _LOGGER.debug("Total entities created: %s", len(entities))
     async_add_entities(entities)
+
 class UniFiSDWANConfigSensor(CoordinatorEntity, SensorEntity):
     """Representation of a UniFi SD-WAN Config sensor."""
 
@@ -109,48 +161,298 @@ class UniFiSDWANConfigSensor(CoordinatorEntity, SensorEntity):
         super().__init__(coordinator)
         self._config_id = config_id
         self._attr_unique_id = f"sdwan_config_{config_id}"
-        self._attr_name = config_name
+        self._attr_name = f"{config_name} Config"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, f"sdwan_config_{config_id}")},
-            name=config_name,
+            name=f"SD-WAN: {config_name}",
             manufacturer=MANUFACTURER,
-            model="SD-WAN Config",
+            model="SD-WAN Configuration",
         )
+        _LOGGER.debug("Initialized SD-WAN config sensor: %s (ID: %s)", config_name, config_id)
 
     @property
     def native_value(self) -> str:
         """Return the state of the SD-WAN config sensor."""
-        config = self._get_config()
-        if config:
-            return config.get("status", "unknown")
+        status = self._get_config_status()
+        _LOGGER.debug("Getting native value for config %s, status data: %s", self._config_id, status)
+        if status:
+            generate_status = status.get("generateStatus", "unknown")
+            _LOGGER.debug("Config %s generate status: %s", self._config_id, generate_status)
+            return generate_status.lower()
+        _LOGGER.debug("No status data for config %s", self._config_id)
         return "unknown"
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra attributes for the SD-WAN config sensor."""
         config = self._get_config()
-        if not config:
-            return {}
-        attrs = {
-            "id": self._config_id,
-            "name": config.get("name"),
-            "description": config.get("description"),
-            "type": config.get("type"),
-            "created": config.get("created"),
-            "last_updated": config.get("lastUpdated"),
-            "status": config.get("status"),
-            "details": config.get("details"),
-        }
+        status = self._get_config_status()
+        
+        attrs = {}
+        
+        if config:
+            attrs.update({
+                "id": self._config_id,
+                "name": config.get("name"),
+                "type": config.get("type"),
+                "variant": config.get("variant"),
+                "hub_count": len(config.get("hubs", [])),
+                "spoke_count": len(config.get("spokes", [])),
+            })
+            
+            # Add settings info
+            settings = config.get("settings", {})
+            if settings:
+                attrs.update({
+                    "hubs_interconnect": settings.get("hubsInterconnect"),
+                    "spokes_isolate": settings.get("spokesIsolate"),
+                    "spokes_auto_scale": settings.get("spokesAutoScaleAndNatEnabled"),
+                })
+
+        if status:
+            attrs.update({
+                "generate_status": status.get("generateStatus"),
+                "last_generated_at": status.get("lastGeneratedAt"),
+                "fingerprint": status.get("fingerprint"),
+                "updated_at": status.get("updatedAt"),
+                "total_errors": len(status.get("errors", [])),
+                "total_warnings": len(status.get("warnings", [])),
+                "hub_status_count": len(status.get("hubs", [])),
+                "spoke_status_count": len(status.get("spokes", [])),
+            })
+
         return attrs
 
     def _get_config(self) -> dict[str, Any] | None:
         """Get the SD-WAN config data from coordinator."""
         if not self.coordinator.data:
+            _LOGGER.debug("No coordinator data for config %s", self._config_id)
             return None
-        for config in self.coordinator.data.get("sdwan_configs", []):
+        
+        configs = self.coordinator.data.get("sdwan_configs", [])
+        _LOGGER.debug("Searching %d configs for ID %s", len(configs), self._config_id)
+        
+        for config in configs:
             if config.get("id") == self._config_id:
+                _LOGGER.debug("Found config data for %s", self._config_id)
                 return config
+        
+        _LOGGER.debug("Config %s not found in coordinator data", self._config_id)
         return None
+
+    def _get_config_status(self) -> dict[str, Any] | None:
+        """Get the SD-WAN config status from coordinator."""
+        if not self.coordinator.data:
+            _LOGGER.debug("No coordinator data for config status %s", self._config_id)
+            return None
+        
+        statuses = self.coordinator.data.get("sdwan_statuses", {})
+        _LOGGER.debug("Available status keys: %s, looking for: %s", list(statuses.keys()), self._config_id)
+        
+        status = statuses.get(self._config_id)
+        if status:
+            _LOGGER.debug("Found status data for %s", self._config_id)
+        else:
+            _LOGGER.debug("No status data found for %s", self._config_id)
+        
+        return status
+
+
+class UniFiSDWANHubSensor(CoordinatorEntity, SensorEntity):
+    """Representation of a UniFi SD-WAN Hub sensor."""
+
+    def __init__(self, coordinator: DataUpdateCoordinator, config_id: str, hub_data: dict, config_name: str) -> None:
+        super().__init__(coordinator)
+        self._config_id = config_id
+        self._hub_id = hub_data.get("id")
+        self._site_id = hub_data.get("siteId")
+        self._host_id = hub_data.get("hostId")
+        hub_name = hub_data.get("name", f"Hub-{self._hub_id}")
+        
+        self._attr_unique_id = f"sdwan_hub_{config_id}_{self._hub_id}"
+        self._attr_name = f"{config_name} Hub: {hub_name}"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, f"sdwan_hub_{config_id}_{self._hub_id}")},
+            name=f"SD-WAN Hub: {hub_name}",
+            manufacturer=MANUFACTURER,
+            model="SD-WAN Hub",
+            via_device=(DOMAIN, f"sdwan_config_{config_id}"),
+        )
+
+    @property
+    def native_value(self) -> str:
+        """Return the state of the SD-WAN hub sensor."""
+        hub_status = self._get_hub_status()
+        if hub_status:
+            apply_status = hub_status.get("applyStatus", "unknown")
+            return apply_status.lower() if isinstance(apply_status, str) else str(apply_status).lower()
+        return "unknown"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return extra attributes for the SD-WAN hub sensor."""
+        hub_status = self._get_hub_status()
+        if not hub_status:
+            return {}
+
+        attrs = {
+            "hub_id": self._hub_id,
+            "site_id": self._site_id,
+            "host_id": self._host_id,
+            "apply_status": hub_status.get("applyStatus"),
+            "error_count": len(hub_status.get("errors", [])),
+            "warning_count": len(hub_status.get("warnings", [])),
+            "network_count": len(hub_status.get("networks", [])),
+            "route_count": len(hub_status.get("routes", [])),
+            "tunnels_used_by_other_features": hub_status.get("numberOfTunnelsUsedByOtherFeatures", 0),
+        }
+
+        # Add WAN status information
+        primary_wan = hub_status.get("primaryWanStatus")
+        if primary_wan:
+            attrs.update({
+                "primary_wan_ip": primary_wan.get("ip"),
+                "primary_wan_latency": primary_wan.get("latency"),
+                "primary_wan_id": primary_wan.get("wanId"),
+                "primary_wan_issues": len(primary_wan.get("internetIssues", [])),
+            })
+
+        secondary_wan = hub_status.get("secondaryWanStatus")
+        if secondary_wan:
+            attrs.update({
+                "secondary_wan_ip": secondary_wan.get("ip"),
+                "secondary_wan_latency": secondary_wan.get("latency"),
+                "secondary_wan_id": secondary_wan.get("wanId"),
+                "secondary_wan_issues": len(secondary_wan.get("internetIssues", [])),
+            })
+
+        return attrs
+
+    def _get_hub_status(self) -> dict[str, Any] | None:
+        """Get the hub status from coordinator data."""
+        if not self.coordinator.data:
+            return None
+        
+        statuses = self.coordinator.data.get("sdwan_statuses", {})
+        config_status = statuses.get(self._config_id)
+        
+        if not config_status:
+            return None
+
+        for hub in config_status.get("hubs", []):
+            if hub.get("id") == self._hub_id:
+                return hub
+        return None
+
+
+class UniFiSDWANSpokeSensor(CoordinatorEntity, SensorEntity):
+    """Representation of a UniFi SD-WAN Spoke sensor."""
+
+    def __init__(self, coordinator: DataUpdateCoordinator, config_id: str, spoke_data: dict, config_name: str) -> None:
+        super().__init__(coordinator)
+        self._config_id = config_id
+        self._spoke_id = spoke_data.get("id")
+        self._site_id = spoke_data.get("siteId")
+        self._host_id = spoke_data.get("hostId")
+        spoke_name = spoke_data.get("name", f"Spoke-{self._spoke_id}")
+        
+        self._attr_unique_id = f"sdwan_spoke_{config_id}_{self._spoke_id}"
+        self._attr_name = f"{config_name} Spoke: {spoke_name}"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, f"sdwan_spoke_{config_id}_{self._spoke_id}")},
+            name=f"SD-WAN Spoke: {spoke_name}",
+            manufacturer=MANUFACTURER,
+            model="SD-WAN Spoke",
+            via_device=(DOMAIN, f"sdwan_config_{config_id}"),
+        )
+
+    @property
+    def native_value(self) -> str:
+        """Return the state of the SD-WAN spoke sensor."""
+        spoke_status = self._get_spoke_status()
+        if spoke_status:
+            apply_status = spoke_status.get("applyStatus", "unknown")
+            return apply_status.lower() if isinstance(apply_status, str) else str(apply_status).lower()
+        return "unknown"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return extra attributes for the SD-WAN spoke sensor."""
+        spoke_status = self._get_spoke_status()
+        if not spoke_status:
+            return {}
+
+        attrs = {
+            "spoke_id": self._spoke_id,
+            "site_id": self._site_id,
+            "host_id": self._host_id,
+            "apply_status": spoke_status.get("applyStatus"),
+            "error_count": len(spoke_status.get("errors", [])),
+            "warning_count": len(spoke_status.get("warnings", [])),
+            "network_count": len(spoke_status.get("networks", [])),
+            "route_count": len(spoke_status.get("routes", [])),
+            "connection_count": len(spoke_status.get("connections", [])),
+            "tunnels_used_by_other_features": spoke_status.get("numberOfTunnelsUsedByOtherFeatures", 0),
+        }
+
+        # Add WAN status information
+        primary_wan = spoke_status.get("primaryWanStatus")
+        if primary_wan:
+            attrs.update({
+                "primary_wan_ip": primary_wan.get("ip"),
+                "primary_wan_latency": primary_wan.get("latency"),
+                "primary_wan_id": primary_wan.get("wanId"),
+                "primary_wan_issues": len(primary_wan.get("internetIssues", [])),
+            })
+
+        secondary_wan = spoke_status.get("secondaryWanStatus")
+        if secondary_wan:
+            attrs.update({
+                "secondary_wan_ip": secondary_wan.get("ip"),
+                "secondary_wan_latency": secondary_wan.get("latency"),
+                "secondary_wan_id": secondary_wan.get("wanId"),
+                "secondary_wan_issues": len(secondary_wan.get("internetIssues", [])),
+            })
+
+        # Add connection status
+        connections = spoke_status.get("connections", [])
+        connected_hubs = 0
+        total_tunnels = 0
+        connected_tunnels = 0
+
+        for connection in connections:
+            tunnels = connection.get("tunnels", [])
+            total_tunnels += len(tunnels)
+            hub_connected = any(tunnel.get("status") == "connected" for tunnel in tunnels)
+            if hub_connected:
+                connected_hubs += 1
+                connected_tunnels += len([t for t in tunnels if t.get("status") == "connected"])
+
+        attrs.update({
+            "connected_hubs": connected_hubs,
+            "total_tunnels": total_tunnels,
+            "connected_tunnels": connected_tunnels,
+            "tunnel_success_rate": round((connected_tunnels / total_tunnels * 100), 2) if total_tunnels > 0 else 0,
+        })
+
+        return attrs
+
+    def _get_spoke_status(self) -> dict[str, Any] | None:
+        """Get the spoke status from coordinator data."""
+        if not self.coordinator.data:
+            return None
+        
+        statuses = self.coordinator.data.get("sdwan_statuses", {})
+        config_status = statuses.get(self._config_id)
+        
+        if not config_status:
+            return None
+
+        for spoke in config_status.get("spokes", []):
+            if spoke.get("id") == self._spoke_id:
+                return spoke
+        return None
+
 
 class UniFiSiteSensor(CoordinatorEntity, SensorEntity):
     """Representation of a UniFi site sensor."""
@@ -449,4 +751,3 @@ class UniFiISPMetricsDevice(CoordinatorEntity, SensorEntity):
     def available(self) -> bool:
         """Return if entity is available."""
         return self.coordinator.last_update_success and bool(self.coordinator.data)
-

@@ -23,6 +23,7 @@ from .const import (
     API_SITES_ENDPOINT,
     API_DEVICES_ENDPOINT,
     API_HOSTS_ENDPOINT,
+    API_SD_WAN_CONFIGS,
     UPDATE_INTERVAL,
 )
 
@@ -64,11 +65,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Check if device's identifiers contain a site ID we're removing
         for identifier in device.identifiers:
             if identifier[0] == DOMAIN:
-                # Device ID format is "{site_id}_{mac}"
-                site_id = identifier[1].split("_")[0]
-                if site_id not in selected_sites:
-                    _LOGGER.debug("Removing device %s for non-selected site %s", device.id, site_id)
-                    device_registry.async_remove_device(device.id)
+                # Device ID format is "{site_id}_{mac}" or "sdwan_config_{id}"
+                device_id = identifier[1]
+                if device_id.startswith("sdwan_"):
+                    # SD-WAN devices - always keep them for now
+                    continue
+                elif "_" in device_id:
+                    site_id = device_id.split("_")[0]
+                    if site_id not in selected_sites:
+                        _LOGGER.debug("Removing device %s for non-selected site %s", device.id, site_id)
+                        device_registry.async_remove_device(device.id)
                 break
     
     # Remove entities that don't belong to selected sites
@@ -80,6 +86,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         
         if unique_id.startswith("site_"):
             site_id = unique_id[5:]  # Remove "site_" prefix
+        elif unique_id.startswith("sdwan_"):
+            # SD-WAN entities - keep them for now
+            continue
         else:
             # For device sensors, the site ID is before the underscore
             site_id = unique_id.split("_")[0]
@@ -155,12 +164,77 @@ class UniFiSiteManagerDataUpdateCoordinator(DataUpdateCoordinator):
                 if not devices_response:
                     devices_response = {"data": []}
 
-                # Fetch SD-WAN configs
-                sdwan_configs_response = await self._fetch_data(session, "/ea/sd-wan-configs")
-                if not sdwan_configs_response:
-                    sdwan_configs = []
+                # Enhanced SD-WAN debug logging
+                _LOGGER.debug("=== Starting SD-WAN Config Fetch ===")
+                
+                # Fetch SD-WAN configs with debug
+                try:
+                    sdwan_configs_response = await self._fetch_data(session, API_SD_WAN_CONFIGS)
+                    _LOGGER.debug("SD-WAN configs raw response: %s", sdwan_configs_response)
+                except Exception as err:
+                    _LOGGER.error("Failed to fetch SD-WAN configs: %s", err)
+                    sdwan_configs_response = None
+
+                sdwan_configs = []
+                sdwan_statuses = {}
+                
+                if sdwan_configs_response and sdwan_configs_response.get("data"):
+                    sdwan_configs = sdwan_configs_response["data"]
+                    _LOGGER.debug("Found %d SD-WAN configs: %s", len(sdwan_configs), [c.get("id") for c in sdwan_configs])
+                    
+                    # For each SD-WAN config, fetch its detailed status
+                    for i, config in enumerate(sdwan_configs):
+                        config_id = config.get("id")
+                        config_name = config.get("name", f"Unknown-{i}")
+                        _LOGGER.debug("Processing SD-WAN config %d: id=%s, name=%s", i, config_id, config_name)
+                        
+                        if config_id:
+                            try:
+                                # Fetch detailed config info
+                                _LOGGER.debug("Fetching detailed config for %s", config_id)
+                                config_detail_url = f"/ea/sd-wan-configs/{config_id}"
+                                config_detail = await self._fetch_data(session, config_detail_url)
+                                _LOGGER.debug("Config detail response for %s: %s", config_id, config_detail)
+                                
+                                if config_detail and config_detail.get("data"):
+                                    # Merge the detailed config data
+                                    detailed_data = config_detail["data"]
+                                    config.update(detailed_data)
+                                    _LOGGER.debug("Updated config %s with detailed data. Hub count: %d, Spoke count: %d", 
+                                                config_id, 
+                                                len(config.get("hubs", [])), 
+                                                len(config.get("spokes", [])))
+                                else:
+                                    _LOGGER.warning("No detailed config data returned for %s", config_id)
+                                
+                                # Fetch config status
+                                _LOGGER.debug("Fetching status for config %s", config_id)
+                                status_url = f"/ea/sd-wan-configs/{config_id}/status"
+                                status_response = await self._fetch_data(session, status_url)
+                                _LOGGER.debug("Status response for %s: %s", config_id, status_response)
+                                
+                                if status_response and status_response.get("data"):
+                                    sdwan_statuses[config_id] = status_response["data"]
+                                    status_data = status_response["data"]
+                                    _LOGGER.debug("Status for %s: generate_status=%s, hub_statuses=%d, spoke_statuses=%d", 
+                                                config_id,
+                                                status_data.get("generateStatus"),
+                                                len(status_data.get("hubs", [])),
+                                                len(status_data.get("spokes", [])))
+                                else:
+                                    _LOGGER.warning("No status data returned for %s", config_id)
+                                    
+                            except Exception as err:
+                                _LOGGER.error("Error fetching SD-WAN config details for %s: %s", config_id, err)
+                                _LOGGER.exception("Full exception for SD-WAN config %s", config_id)
                 else:
-                    sdwan_configs = sdwan_configs_response.get("data", [])
+                    _LOGGER.warning("No SD-WAN configs found in response or response was empty")
+                    if sdwan_configs_response:
+                        _LOGGER.debug("SD-WAN response keys: %s", list(sdwan_configs_response.keys()))
+
+                _LOGGER.debug("=== SD-WAN Config Fetch Complete ===")
+                _LOGGER.debug("Final SD-WAN configs count: %d", len(sdwan_configs))
+                _LOGGER.debug("Final SD-WAN statuses count: %d", len(sdwan_statuses))
 
                 # Fetch ISP metrics for each site
                 isp_metrics = {}
@@ -185,6 +259,7 @@ class UniFiSiteManagerDataUpdateCoordinator(DataUpdateCoordinator):
                     "devices": devices_response.get("data", []),
                     "isp_metrics": isp_metrics,
                     "sdwan_configs": sdwan_configs,
+                    "sdwan_statuses": sdwan_statuses,
                 }
 
         except Exception as err:
@@ -195,21 +270,47 @@ class UniFiSiteManagerDataUpdateCoordinator(DataUpdateCoordinator):
         """Fetch data from a specific API endpoint."""
         try:
             url = f"{API_BASE_URL}{endpoint}"
-            _LOGGER.debug("Fetching data from %s", url)
+            _LOGGER.debug("Making API request to: %s", url)
+            _LOGGER.debug("Using headers: %s", {k: v if k != "X-API-KEY" else "***REDACTED***" for k, v in self.headers.items()})
 
             async with session.get(
                 url,
                 headers=self.headers,
             ) as resp:
+                _LOGGER.debug("Response status for %s: %d", endpoint, resp.status)
+                
                 if resp.status == 401:
-                    _LOGGER.debug("Authentication failed for %s: Invalid API key", url)
+                    _LOGGER.error("Authentication failed for %s: Invalid API key", url)
                     raise ConfigEntryAuthFailed("Invalid API key")
+                
+                if resp.status == 404:
+                    _LOGGER.warning("Endpoint not found: %s", url)
+                    return {}
+                    
+                if resp.status != 200:
+                    response_text = await resp.text()
+                    _LOGGER.error("HTTP error %d for %s: %s", resp.status, url, response_text)
+                
                 resp.raise_for_status()
                 data = await resp.json()
-                _LOGGER.debug("Response from %s: %s", url, data)
+                
+                # Log response structure without full data
+                if isinstance(data, dict):
+                    _LOGGER.debug("Response structure for %s: keys=%s", endpoint, list(data.keys()))
+                    if "data" in data:
+                        data_content = data["data"]
+                        if isinstance(data_content, list):
+                            _LOGGER.debug("Response data is list with %d items", len(data_content))
+                        else:
+                            _LOGGER.debug("Response data type: %s", type(data_content))
+                
                 return data
+                
         except aiohttp.ClientError as err:
-            _LOGGER.debug("Error fetching data from %s: %s", endpoint, err)
+            _LOGGER.error("Network error fetching data from %s: %s", endpoint, err)
+            raise UpdateFailed(f"Error fetching data from {endpoint}: {err}")
+        except Exception as err:
+            _LOGGER.exception("Unexpected error fetching data from %s: %s", endpoint, err)
             raise UpdateFailed(f"Error fetching data from {endpoint}: {err}")
 
     async def _fetch_isp_metrics(
@@ -320,4 +421,3 @@ class UniFiSiteManagerDataUpdateCoordinator(DataUpdateCoordinator):
         except Exception as err:
             _LOGGER.debug("Error fetching ISP metrics: %s", err)
             return {}
-
